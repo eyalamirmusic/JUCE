@@ -1187,13 +1187,18 @@ struct DLLHandle
 
             using ExitModuleFn = bool (PLUGIN_API*)();
 
+
             if (auto* exitFn = (ExitModuleFn) getFunction (exitFnName))
                 exitFn();
 
            #if JUCE_WINDOWS || JUCE_LINUX || JUCE_BSD
             library.close();
+           #else
+            CFBundleUnloadExecutable(bundleRef.get());
            #endif
         }
+
+
     }
 
     //==============================================================================
