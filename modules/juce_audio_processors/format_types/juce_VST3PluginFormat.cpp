@@ -1325,7 +1325,7 @@ struct DLLHandleCache final : public DeletedAtShutdown
 
     JUCE_DECLARE_SINGLETON (DLLHandleCache, false)
 
-    DLLHandle& findOrCreateHandle (const String& modulePath)
+    std::shared_ptr<DLLHandle> findOrCreateHandle (const String& modulePath)
     {
        #if JUCE_LINUX || JUCE_BSD
         File file (getDLLFileFromBundle (modulePath));
@@ -1334,16 +1334,21 @@ struct DLLHandleCache final : public DeletedAtShutdown
        #endif
 
         auto it = std::find_if (openHandles.begin(), openHandles.end(),
-                                [&] (const std::unique_ptr<DLLHandle>& handle)
+                                [&] (const std::weak_ptr<DLLHandle>& handle)
                                 {
-                                     return file == handle->getFile();
+                                    if (auto owner = handle.lock())
+                                        return file == owner->getFile();
+
+                                    return false;
                                 });
 
         if (it != openHandles.end())
-            return *it->get();
+            return std::shared_ptr(*it);
 
-        openHandles.push_back (std::make_unique<DLLHandle> (file));
-        return *openHandles.back().get();
+        auto newHandle = std::make_shared<DLLHandle> (file);
+
+        openHandles.push_back (newHandle);
+        return newHandle;
     }
 
 private:
@@ -1369,7 +1374,7 @@ private:
     }
    #endif
 
-    std::vector<std::unique_ptr<DLLHandle>> openHandles;
+    std::vector<std::weak_ptr<DLLHandle>> openHandles;
 
     //==============================================================================
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (DLLHandleCache)
@@ -1422,13 +1427,22 @@ struct VST3ModuleHandle final : public ReferenceCountedObject
     //==============================================================================
     IPluginFactory* getPluginFactory()
     {
-        return DLLHandleCache::getInstance()->findOrCreateHandle (file.getFullPathName()).getPluginFactory();
+        return getHandle().getPluginFactory();
     }
 
     File getFile() const noexcept    { return file; }
     String getName() const noexcept  { return name; }
 
 private:
+
+    DLLHandle& getHandle()
+    {
+        if (handle == nullptr)
+            handle = DLLHandleCache::getInstance()->findOrCreateHandle (file.getFullPathName());
+
+        return *handle;
+    }
+    std::shared_ptr<DLLHandle> handle;
     //==============================================================================
     static Array<VST3ModuleHandle*>& getActiveModules()
     {
@@ -1439,7 +1453,7 @@ private:
     //==============================================================================
     bool open (const PluginDescription& description)
     {
-        auto pluginFactory = addVSTComSmartPtrOwner (DLLHandleCache::getInstance()->findOrCreateHandle (file.getFullPathName()).getPluginFactory());
+        auto pluginFactory = addVSTComSmartPtrOwner (getPluginFactory());
 
         if (pluginFactory != nullptr)
         {
@@ -3948,7 +3962,8 @@ void VST3PluginFormat::findAllTypesForFile (OwnedArray<PluginDescription>& resul
             for every housed plugin.
         */
 
-        auto pluginFactory = addVSTComSmartPtrOwner (DLLHandleCache::getInstance()->findOrCreateHandle (file).getPluginFactory());
+        auto handle = DLLHandleCache::getInstance()->findOrCreateHandle (file);
+        auto pluginFactory = addVSTComSmartPtrOwner (handle->getPluginFactory());
 
         if (pluginFactory == nullptr)
             continue;
@@ -3969,7 +3984,8 @@ void VST3PluginFormat::createARAFactoryAsync (const PluginDescription& descripti
     }
 
     File file (description.fileOrIdentifier);
-    auto pluginFactory = addVSTComSmartPtrOwner (DLLHandleCache::getInstance()->findOrCreateHandle (file.getFullPathName()).getPluginFactory());
+    auto handle = DLLHandleCache::getInstance()->findOrCreateHandle (file.getFullPathName());
+    auto pluginFactory = addVSTComSmartPtrOwner (handle->getPluginFactory());
     const auto* pluginName = description.name.toRawUTF8();
 
     callback ({ ARAFactoryWrapper { ::juce::getARAFactory (pluginFactory.get(), pluginName) }, {} });
